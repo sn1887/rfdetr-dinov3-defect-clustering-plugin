@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/rfdetr-dinov3-defect-clustering/review-dataset.schema.json",
+  "title": "Dataiku defect review row",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "image_path",
+    "image_status",
+    "image_width",
+    "image_height",
+    "num_defects",
+    "primary_cluster_id",
+    "review_order",
+    "prelabels_json",
+    "instances_json",
+    "error_code",
+    "error_message",
+    "run_id"
+  ],
+  "properties": {
+    "image_path": {"type": "string", "minLength": 1},
+    "image_status": {"enum": ["OK", "NO_DETECTION", "ERROR"]},
+    "image_width": {"type": ["integer", "null"], "minimum": 1},
+    "image_height": {"type": ["integer", "null"], "minimum": 1},
+    "num_defects": {"type": "integer", "minimum": 0},
+    "primary_cluster_id": {"type": ["integer", "null"], "minimum": 0},
+    "review_order": {"type": ["integer", "null"], "minimum": 1},
+    "prelabels_json": {"type": "string"},
+    "instances_json": {"type": "string"},
+    "error_code": {"type": ["string", "null"]},
+    "error_message": {"type": ["string", "null"]},
+    "run_id": {"type": "string", "format": "uuid"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"image_status": {"const": "ERROR"}}},
+      "then": {
+        "properties": {
+          "num_defects": {"const": 0},
+          "prelabels_json": {"const": "[]"},
+          "instances_json": {"const": "[]"}
+        }
+      }
+    }
+  ]
+}

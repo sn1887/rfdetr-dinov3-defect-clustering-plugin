@@ -1,0 +1,27 @@
+name: dinov3_box
+model_id: timm/vit_base_patch16_dinov3.lvd1689m
+timm_version: 1.0.20
+artifact_path: ???
+expected_artifact_sha256: null
+artifact_revision: ???
+expected_prefix_tokens: 5
+input_size: 512
+patch_size: 16
+embedding_dim: 768
+box_padding_fraction: 0.15
+letterbox_fill: imagenet_mean
+layer: final
+patch_normalization: l2
+positional_debias:
+  enabled: true
+  components: 20
+  basis_image: normalized_zero
+pooling:
+  method: fractional_box_mean
+  min_effective_patch_weight: 4.0
+output_normalization: l2
+inference_precision: bf16
+persist_dtype: float16
+device: cuda
+batch_size: 16
+oom_retries: 8

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/rfdetr-dinov3-defect-clustering/detection-cache.schema.json",
+  "title": "Detection cache entry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "detector_signature",
+    "image_sha256",
+    "image_width",
+    "image_height",
+    "detections"
+  ],
+  "properties": {
+    "schema_version": {"const": 2},
+    "detector_signature": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "image_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "image_width": {"type": "integer", "minimum": 1},
+    "image_height": {"type": "integer", "minimum": 1},
+    "detections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["bbox_xyxy", "score", "raw_class_id"],
+        "properties": {
+          "bbox_xyxy": {
+            "type": "array",
+            "items": {"type": "number"},
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "score": {"type": "number", "minimum": 0, "maximum": 1},
+          "raw_class_id": {"type": ["integer", "null"]}
+        }
+      }
+    }
+  }
+}

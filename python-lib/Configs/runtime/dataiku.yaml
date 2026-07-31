@@ -1,0 +1,12 @@
+image_extensions:
+  - .jpg
+  - .jpeg
+  - .png
+continue_on_image_error: true
+max_failure_fraction: 0.10
+min_successful_instances: 2
+force_recompute: false
+sort_paths: true
+temporary_root: null
+write_checksums: true
+input_read_chunk_size: 1048576

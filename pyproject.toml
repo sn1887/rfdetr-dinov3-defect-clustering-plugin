@@ -1,0 +1,32 @@
+[project]
+name = "dataiku-rfdetr-dinov3-defect-clustering-plugin"
+version = "0.1.0"
+description = "Standalone Dataiku DSS plugin for RF-DETR and DINOv3 defect-instance clustering"
+requires-python = ">=3.10,<3.13"
+license = {text = "Apache-2.0"}
+
+[tool.pytest.ini_options]
+pythonpath = ["python-lib"]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+  "requires_pyarrow: requires pyarrow for real Parquet publication",
+  "requires_faiss: requires faiss-cpu",
+  "gpu: requires qualified model weights and a CUDA node",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 110
+extend-exclude = ["docs/ARCHITECTURE_SOURCE.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+check_untyped_defs = true
+no_implicit_optional = true
+exclude = ["custom-recipes/"]

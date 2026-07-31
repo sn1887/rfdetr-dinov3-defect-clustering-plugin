@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/rfdetr-dinov3-defect-clustering/instance-record.schema.json",
+  "title": "Detected defect instance artifact record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "instance_id",
+    "instance_key",
+    "image_path",
+    "image_sha256",
+    "bbox_xmin",
+    "bbox_ymin",
+    "bbox_width",
+    "bbox_height",
+    "bbox_xyxy_float",
+    "detector_score",
+    "embedding_status",
+    "warning_codes"
+  ],
+  "properties": {
+    "run_id": {"type": "string", "format": "uuid"},
+    "instance_id": {"type": "string", "pattern": "^di_[0-9a-f]{16}$"},
+    "instance_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "image_path": {"type": "string", "minLength": 1},
+    "image_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "bbox_xmin": {"type": "integer", "minimum": 0},
+    "bbox_ymin": {"type": "integer", "minimum": 0},
+    "bbox_width": {"type": "integer", "minimum": 1},
+    "bbox_height": {"type": "integer", "minimum": 1},
+    "bbox_xyxy_float": {
+      "type": "array",
+      "prefixItems": [
+        {"type": "number"},
+        {"type": "number"},
+        {"type": "number"},
+        {"type": "number"}
+      ],
+      "items": false,
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "detector_score": {"type": "number", "minimum": 0, "maximum": 1},
+    "raw_class_id": {"type": ["integer", "null"]},
+    "embedding_row": {"type": ["integer", "null"], "minimum": 0},
+    "embedding_status": {"enum": ["PENDING", "CACHED", "COMPUTED", "ERROR"]},
+    "cluster_id": {"type": ["integer", "null"], "minimum": 0},
+    "cosine_to_centroid": {"type": ["number", "null"], "minimum": -1, "maximum": 1},
+    "cluster_rank": {"type": ["integer", "null"], "minimum": 1},
+    "cluster_size": {"type": ["integer", "null"], "minimum": 1},
+    "warning_codes": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+  }
+}

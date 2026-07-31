@@ -1,0 +1,10 @@
+defaults:
+  - detector: rfdetr
+  - embedding: dinov3_box
+  - clustering: spherical_kmeans
+  - runtime: dataiku
+  - _self_
+
+schema_version: 1
+seed: 42
+pipeline_name: rfdetr_dinov3_spherical_kmeans

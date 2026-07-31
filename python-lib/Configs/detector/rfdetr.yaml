@@ -1,0 +1,15 @@
+name: rfdetr
+checkpoint_path: ???
+expected_checkpoint_sha256: null
+model_class: RFDETRSmall
+package_compatibility: ==1.5.2
+class_agnostic: true
+threshold: 0.35
+max_detections_per_image: 20
+clip_to_image: true
+drop_degenerate: true
+safe_checkpoint_loading: true
+device: cuda
+batch_size: 4
+oom_retries: 8
+preprocessing_spec: rfdetr_1_5_2_package_default_v1

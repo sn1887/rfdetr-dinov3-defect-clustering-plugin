@@ -1,0 +1,130 @@
+{
+  "id": "rfdetr-dinov3-defect-clustering",
+  "version": "0.1.0",
+  "meta": {
+    "label": "RF-DETR + DINOv3 Defect Clustering",
+    "description": "Detect industrial defect instances with a provisioned RF-DETR checkpoint, embed them with frozen DINOv3 dense features, and organize them into review groups.",
+    "author": "Project contributors",
+    "icon": "icon-object-group",
+    "tags": [
+      "Computer Vision",
+      "Object Detection",
+      "Clustering",
+      "Annotation"
+    ],
+    "licenseInfo": "Apache License 2.0"
+  },
+  "params": [
+    {
+      "name": "models_separator",
+      "label": "Provisioned model resources",
+      "type": "SEPARATOR",
+      "description": "The plugin never downloads model code or weights at recipe runtime. Paths must be readable by the DSS execution identity."
+    },
+    {
+      "name": "rfdetr_checkpoint_path",
+      "label": "RF-DETR checkpoint path",
+      "type": "STRING",
+      "mandatory": true,
+      "description": "Absolute path to the trusted, class-agnostic RF-DETR checkpoint."
+    },
+    {
+      "name": "rfdetr_checkpoint_sha256",
+      "label": "Expected RF-DETR checkpoint SHA-256",
+      "type": "STRING",
+      "mandatory": false,
+      "description": "Optional expected lowercase hexadecimal SHA-256. When supplied, a mismatch is fatal."
+    },
+    {
+      "name": "rfdetr_model_class",
+      "label": "RF-DETR model class",
+      "type": "STRING",
+      "mandatory": true,
+      "defaultValue": "RFDETRSmall",
+      "description": "Concrete exported rfdetr 1.5.2 detection variant qualified for this checkpoint, such as RFDETRSmall or RFDETRMedium. 'auto' is not supported."
+    },
+    {
+      "name": "rfdetr_package_compatibility",
+      "label": "Required RF-DETR package version",
+      "type": "STRING",
+      "mandatory": true,
+      "defaultValue": "==1.5.2",
+      "description": "Exact qualified production constraint. This release requires ==1.5.2."
+    },
+    {
+      "name": "dinov3_model_id",
+      "label": "DINOv3 timm model ID",
+      "type": "STRING",
+      "mandatory": true,
+      "defaultValue": "timm/vit_base_patch16_dinov3.lvd1689m",
+      "description": "Qualified Hugging Face timm model identity. Runtime never resolves this ID over the network."
+    },
+    {
+      "name": "dinov3_timm_version",
+      "label": "Qualified timm version",
+      "type": "STRING",
+      "mandatory": true,
+      "defaultValue": "1.0.20",
+      "description": "Exact installed timm version qualified by this plugin."
+    },
+    {
+      "name": "dinov3_artifact_path",
+      "label": "Local DINOv3 artifact or snapshot path",
+      "type": "STRING",
+      "mandatory": true,
+      "description": "Absolute path to an administrator-provisioned .safetensors file or offline snapshot directory containing exactly one top-level .safetensors file."
+    },
+    {
+      "name": "dinov3_artifact_revision",
+      "label": "Immutable DINOv3 artifact revision",
+      "type": "STRING",
+      "mandatory": true,
+      "description": "Immutable Hugging Face snapshot revision or administrator artifact revision recorded in provenance."
+    },
+    {
+      "name": "dinov3_artifact_sha256",
+      "label": "Expected DINOv3 artifact SHA-256",
+      "type": "STRING",
+      "mandatory": false,
+      "description": "Optional expected lowercase hexadecimal SHA-256. When supplied, a mismatch is fatal."
+    },
+    {
+      "name": "runtime_separator",
+      "label": "Runtime policy",
+      "type": "SEPARATOR"
+    },
+    {
+      "name": "device_policy",
+      "label": "Device policy",
+      "type": "SELECT",
+      "mandatory": true,
+      "defaultValue": "cuda_required",
+      "selectChoices": [
+        {
+          "value": "cuda_required",
+          "label": "CUDA required (production)"
+        },
+        {
+          "value": "cpu_allowed",
+          "label": "CPU allowed (tests and small diagnostics)"
+        }
+      ]
+    },
+    {
+      "name": "temporary_root",
+      "label": "Local temporary root",
+      "type": "STRING",
+      "mandatory": false,
+      "description": "Optional absolute directory for run-local staging. Leave empty to use the system temporary directory."
+    },
+    {
+      "name": "max_failure_fraction",
+      "label": "Maximum row-level failure fraction",
+      "type": "DOUBLE",
+      "mandatory": true,
+      "defaultValue": 0.1,
+      "minD": 0.0,
+      "maxD": 1.0
+    }
+  ]
+}

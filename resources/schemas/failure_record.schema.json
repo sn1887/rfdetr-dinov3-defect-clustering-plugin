@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/rfdetr-dinov3-defect-clustering/failure-record.schema.json",
+  "title": "Row or instance failure record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "image_path",
+    "stage",
+    "error_code",
+    "exception_type",
+    "sanitized_message",
+    "retry_count",
+    "occurred_at_utc"
+  ],
+  "properties": {
+    "run_id": {"type": "string", "format": "uuid"},
+    "image_path": {"type": "string", "minLength": 1},
+    "image_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "instance_id": {"type": ["string", "null"]},
+    "stage": {"type": "string", "minLength": 1},
+    "error_code": {"type": "string", "pattern": "^[A-Z0-9_]+$"},
+    "exception_type": {"type": "string", "minLength": 1},
+    "sanitized_message": {"type": "string"},
+    "retry_count": {"type": "integer", "minimum": 0},
+    "occurred_at_utc": {"type": "string", "format": "date-time"}
+  }
+}

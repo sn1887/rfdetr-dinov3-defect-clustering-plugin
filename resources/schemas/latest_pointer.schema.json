@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/rfdetr-dinov3-defect-clustering/latest-pointer.schema.json",
+  "title": "Current run pointer",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "manifest_path", "manifest_sha256", "published_at_utc"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string", "format": "uuid"},
+    "manifest_path": {"type": "string", "pattern": "^runs/[^/]+/manifest\\.json$"},
+    "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "published_at_utc": {"type": "string", "format": "date-time"}
+  }
+}

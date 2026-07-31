@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/rfdetr-dinov3-defect-clustering/run-manifest.schema.json",
+  "title": "Versioned defect-clustering run manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "created_at_utc",
+    "pipeline",
+    "job",
+    "input",
+    "counts",
+    "signatures",
+    "models",
+    "clustering",
+    "cache",
+    "effective_batch_sizes",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "run_id": {"type": "string", "format": "uuid"},
+    "created_at_utc": {"type": "string", "format": "date-time"},
+    "pipeline": {"const": "rfdetr_dinov3_spherical_kmeans"},
+    "job": {
+      "type": "object",
+      "required": ["started_at_utc", "completed_at_utc"],
+      "properties": {
+        "started_at_utc": {"type": "string", "format": "date-time"},
+        "completed_at_utc": {"type": "string", "format": "date-time"}
+      }
+    },
+    "input": {
+      "type": "object",
+      "required": ["managed_folder_id", "image_count", "input_manifest_sha256"],
+      "properties": {
+        "managed_folder_id": {"type": "string"},
+        "image_count": {"type": "integer", "minimum": 1},
+        "input_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "counts": {"type": "object"},
+    "signatures": {"type": "object"},
+    "models": {"type": "object"},
+    "clustering": {"type": "object"},
+    "cache": {"type": "object"},
+    "effective_batch_sizes": {"type": "object"},
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["sha256"],
+        "properties": {
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

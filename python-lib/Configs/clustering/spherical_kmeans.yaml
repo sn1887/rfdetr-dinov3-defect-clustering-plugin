@@ -1,0 +1,12 @@
+name: spherical_kmeans
+k: ???
+backend: faiss_cpu
+spherical: true
+niter: 25
+nredo: 5
+seed: ${seed}
+fit_dtype: float32
+canonicalize_ids: true
+max_points_per_centroid: 256
+assignment_chunk_size: 100000
+max_empty_cluster_retries: 3

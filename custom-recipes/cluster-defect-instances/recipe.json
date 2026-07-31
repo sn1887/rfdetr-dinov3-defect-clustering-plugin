@@ -1,0 +1,88 @@
+{
+  "meta": {
+    "label": "Cluster defect instances",
+    "description": "RF-DETR localization, DINOv3 defect-instance embeddings, and spherical k-means review grouping.",
+    "icon": "icon-object-group"
+  },
+  "kind": "PYTHON",
+  "selectableFromFolder": "images_folder",
+  "inputRoles": [
+    {
+      "name": "images_folder",
+      "label": "Images folder",
+      "description": "Managed folder containing JPG/JPEG/PNG images. Nested paths are supported.",
+      "arity": "UNARY",
+      "required": true,
+      "acceptsDataset": false,
+      "acceptsManagedFolder": true
+    }
+  ],
+  "outputRoles": [
+    {
+      "name": "review_dataset",
+      "label": "Review dataset",
+      "description": "One row per input image with editable Dataiku object-detection prelabels and cluster context.",
+      "arity": "UNARY",
+      "required": true,
+      "acceptsDataset": true,
+      "acceptsManagedFolder": false
+    },
+    {
+      "name": "artifact_bundle",
+      "label": "Embedding and run artifacts",
+      "description": "Versioned caches, embeddings, centroids, manifests, failures, and provenance.",
+      "arity": "UNARY",
+      "required": true,
+      "acceptsDataset": false,
+      "acceptsManagedFolder": true
+    }
+  ],
+  "params": [
+    {
+      "name": "cluster_count",
+      "label": "Number of clusters",
+      "description": "Required number of spherical k-means review groups. Must not exceed the number of valid embedded instances.",
+      "type": "INT",
+      "mandatory": true,
+      "minI": 2
+    },
+    {
+      "name": "detection_threshold",
+      "label": "RF-DETR detection threshold",
+      "description": "Candidate score threshold. The deployment default should be calibrated for recall.",
+      "type": "DOUBLE",
+      "mandatory": true,
+      "defaultValue": 0.35,
+      "minD": 0.000001,
+      "maxD": 0.999999
+    },
+    {
+      "name": "box_padding_fraction",
+      "label": "Box context fraction",
+      "description": "Symmetric context added before DINOv3 feature extraction.",
+      "type": "DOUBLE",
+      "mandatory": true,
+      "defaultValue": 0.15,
+      "minD": 0.0,
+      "maxD": 0.5
+    },
+    {
+      "name": "max_detections_per_image",
+      "label": "Maximum defects per image",
+      "description": "Safety cap after deterministic score sorting.",
+      "type": "INT",
+      "mandatory": true,
+      "defaultValue": 20,
+      "minI": 1,
+      "maxI": 200
+    },
+    {
+      "name": "force_recompute",
+      "label": "Recompute detections and embeddings",
+      "description": "Ignore compatible detection and embedding caches for this run.",
+      "type": "BOOLEAN",
+      "mandatory": true,
+      "defaultValue": false
+    }
+  ]
+}
