@@ -1,16 +1,16 @@
 # RF-DETR + DINOv3 Defect Clustering for Dataiku DSS
 
-A standalone Dataiku DSS plugin that implements one deliberately narrow pipeline:
+A standalone Dataiku DSS plugin that implements RF-DETR + DINOv3 clustering and centroid scoring:
 
 ```text
 managed image folder
   → class-agnostic RF-DETR boxes
-  → frozen DINOv3 ViT-B/16 dense box descriptors
-  → spherical k-means review groups
+  → frozen DINOv3 ViT-B/16 object-box or whole-image descriptors
+  → spherical k-means review groups or fitted-centroid scoring
   → Dataiku review dataset + versioned artifact/cache folder
 ```
 
-The plugin is an **annotation-assistance system**, not an autonomous label generator. Every machine box is exported with the literal category `UNVALIDATED_DEFECT`; cluster IDs are contextual review metadata and are never represented as semantic classes.
+The plugin is an **annotation-assistance system**, not an autonomous label generator. Every machine box is exported with the literal category `defect`; cluster IDs are contextual review metadata and are exported separately from the detector class.
 
 ## Repository status
 
@@ -18,7 +18,7 @@ This repository contains the full MVP implementation, Dataiku adapter, configura
 
 ## What is implemented
 
-- One visual recipe: `cluster-defect-instances`.
+- Two visual recipes: `cluster-defect-instances` and `score-defect-dataset`.
 - One required input: a managed folder containing JPG/JPEG/PNG images.
 - Two required outputs:
   - one image-level review dataset;
@@ -28,10 +28,10 @@ This repository contains the full MVP implementation, Dataiku adapter, configura
 - Path-unique review instance IDs with content-addressed cache sharing for duplicate image bytes.
 - Safe RF-DETR 1.5.2 weights-only adapter with configurable concrete variants.
 - Frozen timm DINOv3 ViT-B/16 loader using local safetensors with no runtime network access.
-- Aspect-preserving 512×512 letterbox crops with 15% box context.
+- Aspect-preserving 512×512 letterbox crops with 15% box context for object mode, or one whole-image letterbox per readable image for image mode.
 - Final-layer patch features, per-patch L2 normalization, optional locked INSID3-style positional-subspace removal, fractional detector-box pooling, and final L2 normalization.
 - CPU Faiss spherical k-means with deterministic cluster-ID canonicalization.
-- Deterministic representative ranking and small-cluster-first round-robin review order.
+- Deterministic cluster-local review order.
 - Fixed Dataiku output schema and native object-detection label JSON.
 - Per-image partial failures, adaptive OOM batch splitting, integrity checks, provenance, and atomic `LATEST.json` publication.
 - Unit and synthetic integration tests that do not require proprietary model weights.
@@ -47,6 +47,8 @@ plugin.json                         Dataiku plugin metadata and admin settings
 code-env/python/                    code-environment declaration and dependencies
 custom-recipes/cluster-defect-instances/
                                     recipe declaration and thin bootstrap
+custom-recipes/score-defect-dataset/
+                                    fitted-centroid scoring recipe
 python-lib/defect_curation_core/    Dataiku-independent pipeline implementation
 python-lib/defect_curation_plugin/  Dataiku managed-folder/dataset adapters
 python-lib/Configs/                 authoritative Hydra configuration groups
@@ -69,6 +71,7 @@ docs/                               deployment, labeling, audit, and design docu
 4. Provision a qualified RF-DETR weights-only state dictionary and the DINOv3 `model.safetensors` file (or offline snapshot containing it) on paths readable by the DSS execution identity.
 5. Configure the plugin-level settings, including immutable package/revision identifiers and optional expected SHA-256 hashes.
 6. Add **Cluster defect instances** to a Flow, bind the image folder, create the review dataset and artifact managed folder, and supply `cluster_count`.
+7. To assign a new dataset to fitted centers, add **Score a dataset**, bind a new image folder plus the fitted artifact folder, and write scored review/artifact outputs.
 
 The recipe performs no network download. The Dataiku plugin zip does not contain model weights.
 
@@ -94,10 +97,20 @@ The recipe performs no network download. The Dataiku plugin zip does not contain
 | Parameter | Default | Meaning |
 |---|---:|---|
 | `cluster_count` | required | Number of spherical k-means review groups. |
+| `embedding_granularity` | `object` | `object` clusters RF-DETR boxes; `image` clusters one whole-image embedding per readable image while still emitting RF-DETR boxes. |
 | `detection_threshold` | `0.35` | RF-DETR score threshold, calibrated for recall. |
 | `box_padding_fraction` | `0.15` | Context added around every detector box. |
 | `max_detections_per_image` | `20` | Deterministic safety cap after score sorting. |
 | `force_recompute` | `false` | Ignore compatible detector/embedding caches. |
+
+## Scoring recipe parameters
+
+| Parameter | Default | Meaning |
+|---|---:|---|
+| `fit_run_id` | empty | Optional fitted run ID. Empty uses the fitted artifact folder's `LATEST.json`. |
+| `detection_threshold` | `0.35` | RF-DETR score threshold for boxes emitted in the scored dataset. |
+| `max_detections_per_image` | `20` | Deterministic safety cap after score sorting. |
+| `force_recompute` | `false` | Ignore compatible detector/embedding caches for scoring. |
 
 ## Review dataset contract
 
@@ -109,14 +122,16 @@ One row is emitted for every enumerated image, including no-detection and error 
 | `image_status` | string | `OK`, `NO_DETECTION`, or `ERROR`. |
 | `image_width`, `image_height` | bigint | Oriented RGB dimensions. |
 | `num_defects` | bigint | Number of reviewable detector instances. |
-| `primary_cluster_id` | bigint | Cluster of the highest-score successfully embedded instance. |
-| `review_order` | bigint | One-based cross-cluster representative review order. |
-| `prelabels_json` | string | Dataiku box JSON; category is always `UNVALIDATED_DEFECT`. |
+| `primary_cluster_id` | bigint | Row's primary fitted or newly fitted cluster. |
+| `review_order` | bigint | One-based rank within `primary_cluster_id`. |
+| `detection_bbox` | string | Dataiku box JSON; category is always `defect`. |
+| `detection_score` | string | JSON array of RF-DETR confidence scores aligned to `detection_bbox`. |
+| `detection_bbox_cluster` | string | Dataiku box JSON where category is the cluster ID string. |
 | `instances_json` | string | Instance IDs, scores, grouping context, and warnings. |
 | `error_code`, `error_message` | string | Sanitized row-level diagnostic. |
 | `run_id` | string | Identifier of the versioned artifact bundle. |
 
-`ERROR` rows deliberately contain empty prelabels and instance context. Detector evidence remains in the run bundle for audit, but the labeling dataset never offers boxes against unreadable or changed source bytes.
+`ERROR` rows deliberately contain empty detection and instance context. Detector evidence remains in the run bundle for audit, but the labeling dataset never offers boxes against unreadable or changed source bytes.
 
 ## Artifact folder contract
 
@@ -139,13 +154,13 @@ specs/<signature>.json
 specs/positional_basis/<basis_signature>.{json,f32.npy}
 ```
 
-Changing only K reuses detection and embedding caches. Changes to detector threshold/checkpoint invalidate detections and downstream vectors; changes to crop/DINOv3/debias/pooling settings reuse detections but invalidate embeddings.
+Changing only K reuses detection and embedding caches. Changes to detector threshold/checkpoint invalidate detections and object-mode downstream vectors; changes to crop/DINOv3/debias/pooling settings or embedding granularity reuse detections but invalidate embeddings.
 
 The input image folder and artifact output folder must be different. Keep source images immutable during a run and throughout downstream review, and do not launch concurrent builds against the same review dataset/artifact folder pair. Even a cache-only recluster rereads and hashes source images before publishing labels.
 
 ## Native Dataiku labeling
 
-Create an object-detection Labeling task from the review dataset, associate the original image managed folder, use `image_path` as the path column, and import `prelabels_json` as existing labels. Reviewers must replace `UNVALIDATED_DEFECT` with a real taxonomy class or delete the box. See [`docs/DATAIKU_LABELING.md`](docs/DATAIKU_LABELING.md).
+Create an object-detection Labeling task from the review dataset, associate the original image managed folder, use `image_path` as the path column, and import `detection_bbox` as existing labels. See [`docs/DATAIKU_LABELING.md`](docs/DATAIKU_LABELING.md).
 
 ## Local development
 

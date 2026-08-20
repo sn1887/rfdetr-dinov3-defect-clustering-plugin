@@ -92,7 +92,9 @@ def test_fixed_dataset_writer() -> None:
         image_path="a.png",
         image_status="NO_DETECTION",
         num_defects=0,
-        prelabels_json="[]",
+        detection_bbox="[]",
+        detection_score="[]",
+        detection_bbox_cluster="[]",
         instances_json="[]",
         run_id="run",
     )

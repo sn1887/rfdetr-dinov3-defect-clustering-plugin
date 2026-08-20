@@ -1,8 +1,10 @@
-"""Single-path RF-DETR → DINOv3 → spherical k-means pipeline."""
+"""RF-DETR → DINOv3 → spherical k-means and centroid-scoring pipelines."""
 
 from __future__ import annotations
 
+import io
 import importlib.metadata
+import json
 import tempfile
 import uuid
 from collections import Counter, defaultdict
@@ -24,9 +26,10 @@ from defect_curation_core.artifacts.signatures import (
     build_embedding_signature,
 )
 from defect_curation_core.clustering.review_order import assign_cluster_ranks, build_review_order
-from defect_curation_core.clustering.spherical_kmeans import fit_spherical_kmeans
+from defect_curation_core.clustering.spherical_kmeans import assign_to_centroids, fit_spherical_kmeans
 from defect_curation_core.config import config_as_dict, config_hash, resolved_yaml
 from defect_curation_core.detection.postprocess import (
+    build_image_embedding_identity,
     build_instance_identity,
     postprocess_detections,
     quantized_bbox_key,
@@ -59,7 +62,7 @@ from defect_curation_core.io.protocols import ArtifactStore, ImageSource, Review
 from defect_curation_core.labeling.dataiku_object_detection import build_review_rows
 from defect_curation_core.provenance import collect_provenance
 from defect_curation_core.sanitize import sanitize_message
-from defect_curation_core.types import FailureRecord, ImageRecord, InstanceRecord
+from defect_curation_core.types import BBoxXYXY, FailureRecord, ImageRecord, InstanceRecord
 
 DetectorFactory = Callable[[DictConfig], Any]
 EmbedderFactory = Callable[[DictConfig], Any]
@@ -77,6 +80,19 @@ class PipelineRunResult:
     bundle: BundlePublishResult
 
 
+@dataclass(frozen=True, slots=True)
+class FitReference:
+    run_id: str
+    manifest_path: str
+    manifest_sha256: str
+    manifest: dict[str, Any]
+    centroids: np.ndarray
+    embedding_signature: str
+    embedding_granularity: str
+    box_padding_fraction: float
+    cluster_count: int
+
+
 @dataclass(slots=True)
 class _DetectionWork:
     image_index: int
@@ -89,8 +105,76 @@ class _EmbeddingWork:
     crop: CropSample
 
 
+@dataclass(frozen=True, slots=True)
+class _ModelContext:
+    checkpoint_sha256: str
+    artifact_sha256: str
+    rfdetr_package_version: str
+    detector_signature: str
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _load_npy_from_store(store: ArtifactStore, path: str) -> np.ndarray:
+    return np.load(io.BytesIO(store.read_bytes(path)), allow_pickle=False)
+
+
+def load_fit_reference(store: ArtifactStore, *, fit_run_id: str | None = None) -> FitReference:
+    """Load fitted centroids and embedding metadata from a clustering artifact store."""
+
+    requested_run_id = None if fit_run_id is None or not str(fit_run_id).strip() else str(fit_run_id).strip()
+    if requested_run_id is None:
+        try:
+            latest = json.loads(store.read_bytes("LATEST.json").decode("utf-8"))
+            manifest_path = str(latest["manifest_path"])
+            expected_manifest_sha = str(latest["manifest_sha256"])
+        except Exception as exc:
+            raise ArtifactError("Could not read fitted artifact LATEST.json") from exc
+    else:
+        manifest_path = f"runs/{requested_run_id}/manifest.json"
+        expected_manifest_sha = ""
+
+    try:
+        manifest_raw = store.read_bytes(manifest_path)
+        manifest_sha = sha256_bytes(manifest_raw)
+        if expected_manifest_sha and manifest_sha != expected_manifest_sha:
+            raise ArtifactError("Fitted run manifest hash does not match LATEST.json")
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+        run_id = str(manifest["run_id"])
+        run_prefix = str(Path(manifest_path).parent).replace("\\", "/")
+        centroids = np.asarray(_load_npy_from_store(store, f"{run_prefix}/centroids.f32.npy"), dtype=np.float32)
+        if centroids.ndim != 2 or centroids.shape[0] < 1 or centroids.shape[1] < 1:
+            raise ArtifactError(f"Fitted centroids have invalid shape {centroids.shape}")
+        if not np.isfinite(centroids).all():
+            raise ArtifactError("Fitted centroids contain non-finite values")
+        embedding_signature = str(manifest["signatures"]["embedding"])
+        spec = json.loads(store.read_bytes(f"specs/{embedding_signature}.json").decode("utf-8"))
+        embedding_config = spec.get("payload", {}).get("configuration", {})
+        if not isinstance(embedding_config, dict):
+            raise ArtifactError("Fitted embedding signature spec does not contain an embedding configuration")
+        granularity = str(embedding_config.get("granularity", "object"))
+        if granularity not in {"object", "image"}:
+            raise ArtifactError(f"Unsupported fitted embedding granularity: {granularity!r}")
+        cluster_count = int(manifest.get("clustering", {}).get("k", centroids.shape[0]))
+        if cluster_count != centroids.shape[0]:
+            raise ArtifactError("Fitted manifest cluster count does not match centroid matrix")
+        return FitReference(
+            run_id=run_id,
+            manifest_path=manifest_path,
+            manifest_sha256=manifest_sha,
+            manifest=manifest,
+            centroids=centroids,
+            embedding_signature=embedding_signature,
+            embedding_granularity=granularity,
+            box_padding_fraction=float(embedding_config.get("box_padding_fraction", 0.15)),
+            cluster_count=cluster_count,
+        )
+    except ArtifactError:
+        raise
+    except Exception as exc:
+        raise ArtifactError(f"Could not load fitted clustering artifacts from {manifest_path}") from exc
 
 
 def _is_cuda_oom(exc: BaseException) -> bool:
@@ -186,6 +270,55 @@ class DefectClusteringPipeline:
                 f"Installed rfdetr {version} does not satisfy {self.cfg.detector.package_compatibility}"
             )
         return version
+
+    def _prepare_model_context(self) -> _ModelContext:
+        checkpoint_path = Path(str(self.cfg.detector.checkpoint_path))
+        artifact_path = DinoV3Adapter.resolve_artifact(str(self.cfg.embedding.artifact_path))
+        if not checkpoint_path.is_file():
+            raise ModelLoadError(f"RF-DETR checkpoint does not exist: {checkpoint_path}")
+
+        checkpoint_sha256 = sha256_file(checkpoint_path)
+        artifact_sha256 = sha256_file(artifact_path)
+        validate_expected_sha256(
+            checkpoint_sha256,
+            self.cfg.detector.expected_checkpoint_sha256,
+            label="RF-DETR checkpoint",
+        )
+        validate_expected_sha256(
+            artifact_sha256,
+            self.cfg.embedding.expected_artifact_sha256,
+            label="DINOv3 artifact",
+        )
+        rfdetr_package_version = self._resolve_rfdetr_package_version()
+        detector_signature = build_detector_signature(
+            checkpoint_sha256=checkpoint_sha256,
+            rfdetr_package_version=rfdetr_package_version,
+            model_class=str(self.cfg.detector.model_class),
+            preprocessing_spec=str(self.cfg.detector.preprocessing_spec),
+            detection_threshold=float(self.cfg.detector.threshold),
+            max_detections_per_image=int(self.cfg.detector.max_detections_per_image),
+            device=str(self.cfg.detector.device),
+            clip_to_image=bool(self.cfg.detector.clip_to_image),
+            drop_degenerate=bool(self.cfg.detector.drop_degenerate),
+            loader_implementation_version=RFDETRAdapter.LOADER_IMPLEMENTATION_VERSION,
+        )
+        self.cache.write_signature_spec(
+            signature=detector_signature,
+            kind="detector",
+            payload={
+                "checkpoint_sha256": checkpoint_sha256,
+                "rfdetr_package_version": rfdetr_package_version,
+                "model_class": str(self.cfg.detector.model_class),
+                "loader_implementation_version": RFDETRAdapter.LOADER_IMPLEMENTATION_VERSION,
+                "configuration": config_as_dict(self.cfg, redact_paths=True)["detector"],
+            },
+        )
+        return _ModelContext(
+            checkpoint_sha256=checkpoint_sha256,
+            artifact_sha256=artifact_sha256,
+            rfdetr_package_version=rfdetr_package_version,
+            detector_signature=detector_signature,
+        )
 
     def _eligible_image_paths(self) -> list[str]:
         extensions = {str(item) for item in self.cfg.runtime.image_extensions}
@@ -470,9 +603,33 @@ class DefectClusteringPipeline:
         detector_signature: str,
     ) -> list[InstanceRecord]:
         instances: list[InstanceRecord] = []
+        granularity = str(self.cfg.embedding.granularity)
         for image in images:
             if image.status == "ERROR" or image.image_sha256 is None:
                 continue
+            if granularity == "image":
+                if image.width is None or image.height is None:
+                    continue
+                bbox = BBoxXYXY(0.0, 0.0, float(image.width), float(image.height))
+                instance_id, instance_key = build_image_embedding_identity(
+                    image_path=image.image_path,
+                    image_sha256=image.image_sha256,
+                )
+                instances.append(
+                    InstanceRecord(
+                        instance_id=instance_id,
+                        instance_key=instance_key,
+                        image_path=image.image_path,
+                        image_sha256=image.image_sha256,
+                        bbox=bbox,
+                        bbox_xywh=bbox.to_xywh_int(),
+                        detector_score=max((detection.score for detection in image.detections), default=0.0),
+                        raw_class_id=None,
+                        embedding_granularity="image",
+                    )
+                )
+                continue
+
             occurrences: Counter[str] = Counter()
             for detection in image.detections:
                 bbox_key = quantized_bbox_key(detection.bbox)
@@ -495,6 +652,7 @@ class DefectClusteringPipeline:
                         bbox_xywh=detection.bbox.to_xywh_int(),
                         detector_score=detection.score,
                         raw_class_id=detection.raw_class_id,
+                        embedding_granularity="object",
                     )
                 )
         return instances
@@ -669,6 +827,13 @@ class DefectClusteringPipeline:
             basis_input_signature = "disabled"
             basis_sha256 = "disabled"
 
+        granularity = str(self.cfg.embedding.granularity)
+        effective_padding_fraction = 0.0 if granularity == "image" else float(self.cfg.embedding.box_padding_fraction)
+        letterbox_spec = (
+            "full_image_aspect_preserving_bicubic_imagenet_mean_v1"
+            if granularity == "image"
+            else "aspect_preserving_bicubic_imagenet_mean_v1"
+        )
         embedding_signature = build_embedding_signature(
             artifact_sha256=artifact_sha256,
             artifact_revision=str(self.cfg.embedding.artifact_revision),
@@ -677,13 +842,15 @@ class DefectClusteringPipeline:
             loader_implementation_version=DINO_LOADER_IMPLEMENTATION_VERSION,
             input_size=int(self.cfg.embedding.input_size),
             patch_size=int(self.cfg.embedding.patch_size),
-            padding_fraction=float(self.cfg.embedding.box_padding_fraction),
-            letterbox_spec="aspect_preserving_bicubic_imagenet_mean_v1",
+            granularity=granularity,
+            padding_fraction=effective_padding_fraction,
+            letterbox_spec=letterbox_spec,
             patch_layer=str(self.cfg.embedding.layer),
             token_normalization=str(self.cfg.embedding.patch_normalization),
             basis_sha256=basis_sha256,
             pooling_spec={
                 "method": str(self.cfg.embedding.pooling.method),
+                "scope": "full_image_content" if granularity == "image" else "detector_box",
                 "minimum_effective_patch_weight": float(
                     self.cfg.embedding.pooling.min_effective_patch_weight
                 ),
@@ -834,7 +1001,11 @@ class DefectClusteringPipeline:
                             crop = make_letterboxed_crop(
                                 decoded.image,
                                 instance.bbox,
-                                padding_fraction=float(self.cfg.embedding.box_padding_fraction),
+                                padding_fraction=(
+                                    0.0
+                                    if instance.embedding_granularity == "image"
+                                    else float(self.cfg.embedding.box_padding_fraction)
+                                ),
                                 output_size=int(self.cfg.embedding.input_size),
                                 fill=str(self.cfg.embedding.letterbox_fill),
                             )
@@ -898,52 +1069,236 @@ class DefectClusteringPipeline:
         self._check_failure_fraction(images, stage="embedding")
         return embedding_signature, basis_sha256, cache_hits, cache_misses, attempted_batch_sizes
 
+    def score(self, *, fit_reference: FitReference) -> PipelineRunResult:
+        run_id = str(uuid.uuid4())
+        started_at = _utc_now()
+        failures: list[FailureRecord] = []
+
+        if str(self.cfg.embedding.granularity) != fit_reference.embedding_granularity:
+            raise ConfigurationError(
+                "Scoring embedding granularity does not match the fitted artifacts: "
+                f"{self.cfg.embedding.granularity!r} vs {fit_reference.embedding_granularity!r}"
+            )
+        if fit_reference.centroids.shape[1] != int(self.cfg.embedding.embedding_dim):
+            raise ConfigurationError(
+                "Fitted centroid dimension does not match configured DINOv3 embedding dimension"
+            )
+
+        model_context = self._prepare_model_context()
+        detector_signature = model_context.detector_signature
+
+        paths = self._eligible_image_paths()
+        images, detection_hits, detection_misses, detector_batches = self._detection_phase(
+            run_id=run_id,
+            paths=paths,
+            detector_signature=detector_signature,
+            failures=failures,
+        )
+        observed_class_ids = sorted(
+            {
+                int(detection.raw_class_id)
+                for image in images
+                for detection in image.detections
+                if detection.raw_class_id is not None
+            }
+        )
+        if len(observed_class_ids) > 1:
+            raise FatalPipelineError(
+                "The provisioned RF-DETR checkpoint emitted multiple class IDs "
+                f"{observed_class_ids}; scoring requires the same class-agnostic detector policy"
+            )
+
+        instances = self._build_instances(images=images, detector_signature=detector_signature)
+        if not instances:
+            raise FatalPipelineError("The scoring run produced no valid clustering units")
+
+        embedding_signature, basis_sha256, embedding_hits, embedding_misses, embedding_batches = (
+            self._embedding_phase(
+                run_id=run_id,
+                images=images,
+                instances=instances,
+                artifact_sha256=model_context.artifact_sha256,
+                failures=failures,
+            )
+        )
+        if embedding_signature != fit_reference.embedding_signature:
+            raise ConfigurationError(
+                "Scoring embedding signature does not match the fitted centroids. "
+                "Use the same DINOv3 artifact, embedding granularity, crop/pooling settings, and device policy."
+            )
+
+        valid_instances = [instance for instance in instances if instance.embedding is not None]
+        if not valid_instances:
+            raise FatalPipelineError("No valid embeddings remain for centroid scoring")
+
+        with tempfile.TemporaryDirectory(
+            prefix="defect-curation-score-",
+            dir=(None if self.cfg.runtime.temporary_root is None else str(self.cfg.runtime.temporary_root)),
+        ) as work_dir:
+            matrix_path = Path(work_dir) / "embeddings.f16.npy"
+            matrix_writer = np.lib.format.open_memmap(
+                matrix_path,
+                mode="w+",
+                dtype=np.float16,
+                shape=(len(valid_instances), int(self.cfg.embedding.embedding_dim)),
+            )
+            for row_index, instance in enumerate(valid_instances):
+                vector = np.asarray(instance.embedding, dtype=np.float32)
+                norm = float(np.linalg.norm(vector))
+                if not np.isfinite(vector).all() or norm <= 1e-12:
+                    raise FatalPipelineError(f"Invalid embedding for instance {instance.instance_id}")
+                matrix_writer[row_index] = vector.astype(np.float16, copy=False)
+                instance.embedding_row = row_index
+                instance.embedding = None
+            matrix_writer.flush()
+            del matrix_writer
+            matrix = np.load(matrix_path, mmap_mode="r", allow_pickle=False)
+
+            assignments, similarities = assign_to_centroids(
+                matrix,
+                fit_reference.centroids,
+                assignment_chunk_size=int(self.cfg.clustering.assignment_chunk_size),
+            )
+            for row_index, instance in enumerate(valid_instances):
+                instance.cluster_id = int(assignments[row_index])
+                instance.cosine_to_centroid = float(similarities[row_index])
+            assign_cluster_ranks(valid_instances)
+            review_order = build_review_order(valid_instances)
+            review_rows = build_review_rows(
+                run_id=run_id,
+                images=images,
+                instances=instances,
+                review_order=review_order,
+                embedding_granularity=str(self.cfg.embedding.granularity),
+            )
+
+            input_manifest_hash = sha256_json(
+                [
+                    {
+                        "image_path": image.image_path,
+                        "image_sha256": image.image_sha256,
+                        "byte_size": image.byte_size,
+                    }
+                    for image in images
+                ]
+            )
+            counts = {
+                "successful_images": sum(image.status == "OK" for image in images),
+                "no_detection_images": sum(image.status == "NO_DETECTION" for image in images),
+                "error_images": sum(image.status == "ERROR" for image in images),
+                "valid_detector_instances": sum(len(image.detections) for image in images if image.status != "ERROR"),
+                "valid_clustering_units": len(instances),
+                "valid_embedded_instances": len(valid_instances),
+                "failed_instance_embeddings": sum(
+                    instance.embedding_status == "ERROR" for instance in instances
+                ),
+            }
+            provenance = collect_provenance(
+                plugin_version=self.plugin_version,
+                plugin_source_commit=self.plugin_source_commit,
+                dss_version=self.dss_version,
+                dinov3_model_id=str(self.cfg.embedding.model_id),
+                dinov3_timm_version=str(self.cfg.embedding.timm_version),
+                dinov3_artifact_revision=str(self.cfg.embedding.artifact_revision),
+                dinov3_artifact_sha256=model_context.artifact_sha256,
+                dinov3_loader_version=DINO_LOADER_IMPLEMENTATION_VERSION,
+            )
+            manifest_fields: dict[str, Any] = {
+                "pipeline": "rfdetr_dinov3_centroid_scoring",
+                "job": {
+                    "started_at_utc": started_at,
+                    "completed_at_utc": _utc_now(),
+                },
+                "input": {
+                    "managed_folder_id": self.image_source.identifier,
+                    "image_count": len(images),
+                    "input_manifest_sha256": input_manifest_hash,
+                },
+                "fit_reference": {
+                    "run_id": fit_reference.run_id,
+                    "manifest_path": fit_reference.manifest_path,
+                    "manifest_sha256": fit_reference.manifest_sha256,
+                    "embedding_signature": fit_reference.embedding_signature,
+                },
+                "counts": counts,
+                "signatures": {
+                    "detector": detector_signature,
+                    "embedding": embedding_signature,
+                    "positional_basis": basis_sha256,
+                    "config": config_hash(self.cfg),
+                },
+                "models": {
+                    "rfdetr": {
+                        "model_class": str(self.cfg.detector.model_class),
+                        "package_version": model_context.rfdetr_package_version,
+                        "checkpoint_sha256": model_context.checkpoint_sha256,
+                        "loader_implementation_version": RFDETRAdapter.LOADER_IMPLEMENTATION_VERSION,
+                        "observed_foreground_class_ids": observed_class_ids,
+                    },
+                    "dinov3": {
+                        "model_id": str(self.cfg.embedding.model_id),
+                        "timm_version": str(self.cfg.embedding.timm_version),
+                        "artifact_revision": str(self.cfg.embedding.artifact_revision),
+                        "artifact_sha256": model_context.artifact_sha256,
+                        "loader_implementation_version": DINO_LOADER_IMPLEMENTATION_VERSION,
+                    },
+                },
+                "clustering": {
+                    "algorithm": "nearest_fitted_centroid",
+                    "embedding_granularity": str(self.cfg.embedding.granularity),
+                    "k": int(fit_reference.centroids.shape[0]),
+                    "fit_run_id": fit_reference.run_id,
+                },
+                "cache": {
+                    "detection_hits": detection_hits,
+                    "detection_misses": detection_misses,
+                    "embedding_hits": embedding_hits,
+                    "embedding_misses": embedding_misses,
+                },
+                "effective_batch_sizes": {
+                    "detector_attempts": detector_batches,
+                    "dinov3_attempts": embedding_batches,
+                },
+            }
+
+            publisher = RunBundlePublisher(
+                self.artifact_store,
+                temporary_root=(
+                    None if self.cfg.runtime.temporary_root is None else str(self.cfg.runtime.temporary_root)
+                ),
+            )
+            bundle = publisher.publish(
+                run_id=run_id,
+                resolved_config_yaml=resolved_yaml(self.cfg, redact_paths=True),
+                provenance=provenance,
+                manifest_fields=manifest_fields,
+                images=images,
+                instances=instances,
+                embeddings=matrix,
+                centroids=np.asarray(fit_reference.centroids, dtype=np.float32),
+                failures=failures,
+                write_checksums=bool(self.cfg.runtime.write_checksums),
+                before_latest=lambda: self.review_sink.write_rows(review_rows),
+            )
+
+        return PipelineRunResult(
+            run_id=run_id,
+            review_row_count=len(review_rows),
+            image_count=len(images),
+            instance_count=len(instances),
+            embedded_instance_count=len(valid_instances),
+            detector_signature=detector_signature,
+            embedding_signature=embedding_signature,
+            bundle=bundle,
+        )
+
     def run(self) -> PipelineRunResult:
         run_id = str(uuid.uuid4())
         started_at = _utc_now()
         failures: list[FailureRecord] = []
 
-        checkpoint_path = Path(str(self.cfg.detector.checkpoint_path))
-        artifact_path = DinoV3Adapter.resolve_artifact(str(self.cfg.embedding.artifact_path))
-        if not checkpoint_path.is_file():
-            raise ModelLoadError(f"RF-DETR checkpoint does not exist: {checkpoint_path}")
-
-        checkpoint_sha256 = sha256_file(checkpoint_path)
-        artifact_sha256 = sha256_file(artifact_path)
-        validate_expected_sha256(
-            checkpoint_sha256,
-            self.cfg.detector.expected_checkpoint_sha256,
-            label="RF-DETR checkpoint",
-        )
-        validate_expected_sha256(
-            artifact_sha256,
-            self.cfg.embedding.expected_artifact_sha256,
-            label="DINOv3 artifact",
-        )
-        rfdetr_package_version = self._resolve_rfdetr_package_version()
-        detector_signature = build_detector_signature(
-            checkpoint_sha256=checkpoint_sha256,
-            rfdetr_package_version=rfdetr_package_version,
-            model_class=str(self.cfg.detector.model_class),
-            preprocessing_spec=str(self.cfg.detector.preprocessing_spec),
-            detection_threshold=float(self.cfg.detector.threshold),
-            max_detections_per_image=int(self.cfg.detector.max_detections_per_image),
-            device=str(self.cfg.detector.device),
-            clip_to_image=bool(self.cfg.detector.clip_to_image),
-            drop_degenerate=bool(self.cfg.detector.drop_degenerate),
-            loader_implementation_version=RFDETRAdapter.LOADER_IMPLEMENTATION_VERSION,
-        )
-        self.cache.write_signature_spec(
-            signature=detector_signature,
-            kind="detector",
-            payload={
-                "checkpoint_sha256": checkpoint_sha256,
-                "rfdetr_package_version": rfdetr_package_version,
-                "model_class": str(self.cfg.detector.model_class),
-                "loader_implementation_version": RFDETRAdapter.LOADER_IMPLEMENTATION_VERSION,
-                "configuration": config_as_dict(self.cfg, redact_paths=True)["detector"],
-            },
-        )
+        model_context = self._prepare_model_context()
+        detector_signature = model_context.detector_signature
 
         paths = self._eligible_image_paths()
         images, detection_hits, detection_misses, detector_batches = self._detection_phase(
@@ -967,14 +1322,14 @@ class DefectClusteringPipeline:
             )
         instances = self._build_instances(images=images, detector_signature=detector_signature)
         if not instances:
-            raise FatalPipelineError("RF-DETR produced no valid defect instances for clustering")
+            raise FatalPipelineError("The run produced no valid clustering units")
 
         embedding_signature, basis_sha256, embedding_hits, embedding_misses, embedding_batches = (
             self._embedding_phase(
                 run_id=run_id,
                 images=images,
                 instances=instances,
-                artifact_sha256=artifact_sha256,
+                artifact_sha256=model_context.artifact_sha256,
                 failures=failures,
             )
         )
@@ -1036,6 +1391,7 @@ class DefectClusteringPipeline:
                 images=images,
                 instances=instances,
                 review_order=review_order,
+                embedding_granularity=str(self.cfg.embedding.granularity),
             )
 
             input_manifest_hash = sha256_json(
@@ -1052,7 +1408,8 @@ class DefectClusteringPipeline:
                 "successful_images": sum(image.status == "OK" for image in images),
                 "no_detection_images": sum(image.status == "NO_DETECTION" for image in images),
                 "error_images": sum(image.status == "ERROR" for image in images),
-                "valid_detector_instances": len(instances),
+                "valid_detector_instances": sum(len(image.detections) for image in images if image.status != "ERROR"),
+                "valid_clustering_units": len(instances),
                 "valid_embedded_instances": len(valid_instances),
                 "failed_instance_embeddings": sum(
                     instance.embedding_status == "ERROR" for instance in instances
@@ -1065,7 +1422,7 @@ class DefectClusteringPipeline:
                 dinov3_model_id=str(self.cfg.embedding.model_id),
                 dinov3_timm_version=str(self.cfg.embedding.timm_version),
                 dinov3_artifact_revision=str(self.cfg.embedding.artifact_revision),
-                dinov3_artifact_sha256=artifact_sha256,
+                dinov3_artifact_sha256=model_context.artifact_sha256,
                 dinov3_loader_version=DINO_LOADER_IMPLEMENTATION_VERSION,
             )
             manifest_fields: dict[str, Any] = {
@@ -1089,8 +1446,8 @@ class DefectClusteringPipeline:
                 "models": {
                     "rfdetr": {
                         "model_class": str(self.cfg.detector.model_class),
-                        "package_version": rfdetr_package_version,
-                        "checkpoint_sha256": checkpoint_sha256,
+                        "package_version": model_context.rfdetr_package_version,
+                        "checkpoint_sha256": model_context.checkpoint_sha256,
                         "loader_implementation_version": RFDETRAdapter.LOADER_IMPLEMENTATION_VERSION,
                         "observed_foreground_class_ids": observed_class_ids,
                     },
@@ -1098,12 +1455,13 @@ class DefectClusteringPipeline:
                         "model_id": str(self.cfg.embedding.model_id),
                         "timm_version": str(self.cfg.embedding.timm_version),
                         "artifact_revision": str(self.cfg.embedding.artifact_revision),
-                        "artifact_sha256": artifact_sha256,
+                        "artifact_sha256": model_context.artifact_sha256,
                         "loader_implementation_version": DINO_LOADER_IMPLEMENTATION_VERSION,
                     },
                 },
                 "clustering": {
                     "algorithm": "spherical_kmeans",
+                    "embedding_granularity": str(self.cfg.embedding.granularity),
                     "backend": str(self.cfg.clustering.backend),
                     "k": int(self.cfg.clustering.k),
                     "niter": int(self.cfg.clustering.niter),

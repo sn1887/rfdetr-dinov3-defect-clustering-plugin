@@ -12,7 +12,9 @@
     "num_defects",
     "primary_cluster_id",
     "review_order",
-    "prelabels_json",
+    "detection_bbox",
+    "detection_score",
+    "detection_bbox_cluster",
     "instances_json",
     "error_code",
     "error_message",
@@ -26,7 +28,9 @@
     "num_defects": {"type": "integer", "minimum": 0},
     "primary_cluster_id": {"type": ["integer", "null"], "minimum": 0},
     "review_order": {"type": ["integer", "null"], "minimum": 1},
-    "prelabels_json": {"type": "string"},
+    "detection_bbox": {"type": "string"},
+    "detection_score": {"type": "string"},
+    "detection_bbox_cluster": {"type": "string"},
     "instances_json": {"type": "string"},
     "error_code": {"type": ["string", "null"]},
     "error_message": {"type": ["string", "null"]},
@@ -38,7 +42,9 @@
       "then": {
         "properties": {
           "num_defects": {"const": 0},
-          "prelabels_json": {"const": "[]"},
+          "detection_bbox": {"const": "[]"},
+          "detection_score": {"const": "[]"},
+          "detection_bbox_cluster": {"const": "[]"},
           "instances_json": {"const": "[]"}
         }
       }

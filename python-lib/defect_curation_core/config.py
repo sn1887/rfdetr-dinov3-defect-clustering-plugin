@@ -56,6 +56,7 @@ class PoolingConfig:
 @dataclass
 class EmbeddingConfig:
     name: str = "dinov3_box"
+    granularity: str = "object"
     model_id: str = "timm/vit_base_patch16_dinov3.lvd1689m"
     timm_version: str = "1.0.20"
     artifact_path: str = MISSING
@@ -231,6 +232,8 @@ def validate_config(cfg: DictConfig) -> None:
 
         if int(embedding.input_size) != 512 or int(embedding.patch_size) != 16:
             raise ConfigurationError("The locked MVP DINOv3 geometry is 512x512 with 16px patches")
+        if embedding.granularity not in {"object", "image"}:
+            raise ConfigurationError("embedding.granularity must be 'object' or 'image'")
         if int(embedding.embedding_dim) != 768:
             raise ConfigurationError("The locked ViT-B/16 MVP embedding dimension is 768")
         if not 0.0 <= float(embedding.box_padding_fraction) <= 0.5:

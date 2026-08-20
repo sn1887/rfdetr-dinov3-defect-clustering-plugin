@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 ImageStatus = Literal["OK", "NO_DETECTION", "ERROR"]
+EmbeddingGranularity = Literal["object", "image"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +128,7 @@ class InstanceRecord:
     bbox_xywh: tuple[int, int, int, int]
     detector_score: float
     raw_class_id: int | None = None
+    embedding_granularity: EmbeddingGranularity = "object"
     embedding: Any | None = None
     embedding_row: int | None = None
     embedding_status: str = "PENDING"

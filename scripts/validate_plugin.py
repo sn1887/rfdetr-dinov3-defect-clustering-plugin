@@ -20,6 +20,8 @@ REQUIRED_PATHS = (
     "code-env/python/spec/requirements.txt",
     "custom-recipes/cluster-defect-instances/recipe.json",
     "custom-recipes/cluster-defect-instances/recipe.py",
+    "custom-recipes/score-defect-dataset/recipe.json",
+    "custom-recipes/score-defect-dataset/recipe.py",
     "python-lib/Configs/config.yaml",
     "python-lib/defect_curation_core/pipeline.py",
     "python-lib/defect_curation_plugin/recipe_entrypoints.py",
@@ -44,18 +46,34 @@ def _validate_plugin_contract() -> None:
     plugin = _load_json(ROOT / "plugin.json")
     assert plugin["id"] == "rfdetr-dinov3-defect-clustering"
     assert plugin["version"]
-    recipe = _load_json(ROOT / "custom-recipes/cluster-defect-instances/recipe.json")
-    input_roles = {role["name"]: role for role in recipe["inputRoles"]}
-    output_roles = {role["name"]: role for role in recipe["outputRoles"]}
+    cluster_recipe = _load_json(ROOT / "custom-recipes/cluster-defect-instances/recipe.json")
+    input_roles = {role["name"]: role for role in cluster_recipe["inputRoles"]}
+    output_roles = {role["name"]: role for role in cluster_recipe["outputRoles"]}
     assert set(input_roles) == {"images_folder"}
     assert input_roles["images_folder"]["acceptsManagedFolder"] is True
     assert set(output_roles) == {"review_dataset", "artifact_bundle"}
     assert output_roles["review_dataset"]["acceptsDataset"] is True
     assert output_roles["artifact_bundle"]["acceptsManagedFolder"] is True
-    assert {item["name"] for item in recipe["params"]} == {
+    assert {item["name"] for item in cluster_recipe["params"]} == {
         "cluster_count",
+        "embedding_granularity",
         "detection_threshold",
         "box_padding_fraction",
+        "max_detections_per_image",
+        "force_recompute",
+    }
+    score_recipe = _load_json(ROOT / "custom-recipes/score-defect-dataset/recipe.json")
+    input_roles = {role["name"]: role for role in score_recipe["inputRoles"]}
+    output_roles = {role["name"]: role for role in score_recipe["outputRoles"]}
+    assert set(input_roles) == {"images_folder", "fitted_artifact_bundle"}
+    assert input_roles["images_folder"]["acceptsManagedFolder"] is True
+    assert input_roles["fitted_artifact_bundle"]["acceptsManagedFolder"] is True
+    assert set(output_roles) == {"scored_review_dataset", "scoring_artifact_bundle"}
+    assert output_roles["scored_review_dataset"]["acceptsDataset"] is True
+    assert output_roles["scoring_artifact_bundle"]["acceptsManagedFolder"] is True
+    assert {item["name"] for item in score_recipe["params"]} == {
+        "fit_run_id",
+        "detection_threshold",
         "max_detections_per_image",
         "force_recompute",
     }

@@ -20,10 +20,10 @@
 | Positional debiasing | Start the design-lock pilot with the INSID3 correspondence setting of 20 components. Ship exactly one locked setting only if it passes the stated industrial retrieval/clustering gate. |
 | Clustering | **Spherical k-means** in cosine geometry, implemented with Faiss. The user supplies `cluster_count`; defaults are 25 iterations and 5 restarts. |
 | Operator labels | Not accepted as an input and not used in the MVP. Their estimated ~50% accuracy offers too little benefit for this fixed pipeline and creates avoidable confirmation bias. |
-| Dataiku recipe count | **One** visual Python recipe: `cluster-defect-instances`. |
+| Dataiku recipe count | Two visual Python recipes: `cluster-defect-instances` and `score-defect-dataset`. |
 | Mandatory recipe input | One managed folder containing images. |
 | Required outputs | One image-level review dataset and one managed-folder artifact/cache bundle. |
-| Human review | Dataiku native object-detection labeling, importing RF-DETR boxes as `UNVALIDATED_DEFECT`; cluster IDs remain contextual metadata, never classes. |
+| Human review | Dataiku native object-detection labeling, importing RF-DETR boxes as `defect`; cluster IDs remain contextual metadata in separate columns. |
 | Training framework | Plain PyTorch inference only. PyTorch Lightning is not used because the MVP trains nothing. |
 | Quality claim | Only independently audited, reviewer-validated annotations may count as ground truth. Require the one-sided 95% exact binomial lower confidence bound on image-level correctness to exceed 0.95. |
 
@@ -276,15 +276,15 @@ If it fails, the correct response is to improve or retrain RF-DETR outside this 
 8. Normalize patch tokens, apply the locked INSID3 positional-debias projection, pool tokens by fractional overlap with the unpadded detector box, and normalize the 768-dimensional instance vector.
 9. Cache embeddings under an embedding signature.
 10. Fit spherical k-means with the user-supplied `cluster_count`; assign every valid instance and compute cosine-to-centroid and within-cluster rank.
-11. Deterministically interleave representative images across clusters to produce `review_order`.
+11. Rank representative images within each cluster to produce cluster-local `review_order`.
 12. Write the image-level review dataset and an atomic, versioned artifact bundle.
 
 ### 6.2 Key invariants
 
 - One RF-DETR box produces exactly one instance record and at most one embedding.
 - An image with three boxes has three cluster assignments; it is not forced into one semantic cluster.
-- No whole-image DINOv3 vector enters clustering.
-- No pseudo-category other than the literal placeholder `UNVALIDATED_DEFECT` enters the Dataiku annotation JSON.
+- Whole-image DINOv3 vectors enter clustering only when `embedding_granularity=image`.
+- The detector annotation JSON uses the literal category `defect`; cluster IDs are exported in a separate detection-list column.
 - `run_id + cluster_id` identifies an untrusted grouping for one run only.
 - A change to clustering parameters reuses embeddings; a change to the embedding signature invalidates only embeddings and downstream clustering; a change to detector signature invalidates detections and everything downstream.
 - The plugin never writes labels into the source image folder.
@@ -627,9 +627,11 @@ The RF-DETR and DINOv3 checkpoints are administrator-provisioned deployment reso
 | `image_width` | bigint | yes | Oriented image width in pixels. |
 | `image_height` | bigint | yes | Oriented image height in pixels. |
 | `num_defects` | bigint | no | Number of valid RF-DETR instances emitted for the image. |
-| `primary_cluster_id` | bigint | yes | Cluster of the highest-score instance; null when no valid instance. Context only. |
-| `review_order` | bigint | yes | Deterministic, one-based cross-cluster review order; null for errors/no detections after valid rows. |
-| `prelabels_json` | string | no | Dataiku object-detection JSON. Every machine box has category `UNVALIDATED_DEFECT`. |
+| `primary_cluster_id` | bigint | yes | Row's primary fitted or newly fitted cluster; null when no valid clustering unit. Context only. |
+| `review_order` | bigint | yes | Deterministic, one-based rank within `primary_cluster_id`; null for unclustered/error rows. |
+| `detection_bbox` | string | no | Dataiku object-detection JSON. Every machine box has category `defect`. |
+| `detection_score` | string | no | JSON array of RF-DETR confidence scores aligned with `detection_bbox`. |
+| `detection_bbox_cluster` | string | no | Dataiku object-detection JSON where category is the cluster ID string. |
 | `instances_json` | string | no | Audit/context JSON containing per-box instance IDs, detector scores, and cluster metadata. |
 | `error_code` | string | yes | Stable machine-readable error code. |
 | `error_message` | string | yes | Sanitized row-level diagnostic; no stack trace or secret path. |
@@ -637,17 +639,17 @@ The RF-DETR and DINOv3 checkpoints are administrator-provisioned deployment reso
 
 ### 12.2 Example successful row
 
-`prelabels_json`:
+`detection_bbox`:
 
 ```json
 [
   {
     "bbox": [120, 85, 46, 32],
-    "category": "UNVALIDATED_DEFECT"
+    "category": "defect"
   },
   {
     "bbox": [310, 142, 81, 19],
-    "category": "UNVALIDATED_DEFECT"
+    "category": "defect"
   }
 ]
 ```
@@ -685,7 +687,9 @@ The RF-DETR and DINOv3 checkpoints are administrator-provisioned deployment reso
   "num_defects": 0,
   "primary_cluster_id": null,
   "review_order": null,
-  "prelabels_json": "[]",
+  "detection_bbox": "[]",
+  "detection_score": "[]",
+  "detection_bbox_cluster": "[]",
   "instances_json": "[]",
   "error_code": null,
   "error_message": null
@@ -700,7 +704,9 @@ The RF-DETR and DINOv3 checkpoints are administrator-provisioned deployment reso
   "num_defects": 0,
   "primary_cluster_id": null,
   "review_order": null,
-  "prelabels_json": "[]",
+  "detection_bbox": "[]",
+  "detection_score": "[]",
+  "detection_bbox_cluster": "[]",
   "instances_json": "[]",
   "error_code": "IMAGE_DECODE_FAILED",
   "error_message": "Image could not be decoded as a supported format"
@@ -1050,7 +1056,7 @@ Those signals can cause clustering by camera, product, image composition, box si
 
 ### 16.7 Several defects in one image
 
-Every box is processed independently. Two overlapping boxes still receive distinct IDs and embeddings. The plugin does not merge them unless RF-DETR’s own pinned postprocessing has already removed duplicates. Multiple instances may fall into the same or different clusters. The image-level output preserves all of them in `prelabels_json` and `instances_json`.
+In object mode, every box is processed independently. Two overlapping boxes still receive distinct IDs and embeddings. In image mode, one whole-image embedding is clustered while RF-DETR boxes are still preserved in `detection_bbox`, `detection_score`, and `detection_bbox_cluster`.
 
 ---
 
@@ -1202,13 +1208,13 @@ Sort by:
 
 Representative examples appear first; cluster tails remain available later.
 
-### 20.2 Cross-cluster interleaving
+### 20.2 Cluster-local review order
 
-Perform deterministic round-robin interleaving across clusters. For each round, visit clusters in ascending cluster size and then canonical cluster ID. This presents at least one representative from small clusters early without allowing a large common cluster to dominate the first review batch.
+For each primary cluster, sort representative images by centroid similarity, detector score, and stable ID. Assign `review_order` from 1 to N within that cluster. The review dataset is materialized by `primary_cluster_id`, then cluster-local `review_order`, then `image_path`.
 
 ### 20.3 Image de-duplication
 
-When an instance is selected, append its image only if that image has not already received a `review_order`. All boxes on that image are still displayed. Continue the interleave until every successful image with at least one instance has an order.
+When an image has multiple object-level instances, choose the highest-score clustered instance as the row's primary cluster. All boxes on that image are still displayed.
 
 This design is intentionally simple. It does not call centroid distance “uncertainty,” and it does not automatically prioritize detector low-confidence cases. Reviewers can filter the context columns if a targeted audit is needed.
 
@@ -1221,10 +1227,10 @@ This design is intentionally simple. It does not call centroid distance “uncer
 1. Run `cluster-defect-instances` with the source managed folder.
 2. Create a Dataiku object-detection Labeling task from `review_dataset` and associate the original image managed folder.
 3. Select `image_path` as the image path column.
-4. Import `prelabels_json` as existing labels.
-5. Configure `primary_cluster_id`, `instances_json`, detector counts, and run ID as contextual columns.
-6. Define the real defect taxonomy plus the placeholder class `UNVALIDATED_DEFECT`.
-7. Require annotators to replace the placeholder with a real class or remove the proposal.
+4. Import `detection_bbox` as existing labels.
+5. Configure `primary_cluster_id`, `detection_score`, `detection_bbox_cluster`, `instances_json`, detector counts, and run ID as contextual columns.
+6. Define the real defect taxonomy.
+7. Require annotators to validate, rename, or remove each proposal.
 8. Configure reviewers and use the validated-only Labels Dataset for downstream ground truth.
 
 Dataiku documents that pre-existing model labels can be imported and manipulated like other annotations, that reviewers can arbitrate conflicts or provide authoritative annotations, and that validated-only output is the default.
@@ -1578,7 +1584,7 @@ Do not evaluate clustering from silhouette score alone; visually compact but sem
 
 Randomly assign comparable review subsets to:
 
-- cluster-interleaved order with preboxes; and
+- cluster-local order with preboxes; and
 - random image order with the same preboxes.
 
 Measure:
@@ -1737,7 +1743,7 @@ Only consider anomaly localization or another proposal model when a blinded audi
 - signature determinism and invalidation matrix;
 - Dataiku JSON schema and box bounds;
 - cluster canonicalization;
-- round-robin review order and image de-duplication;
+- cluster-local review order and image de-duplication;
 - Hydra override validation and unknown-key rejection.
 
 ### 31.2 Model-adapter contract tests
@@ -1772,7 +1778,7 @@ Run the complete core pipeline against filesystem adapters with:
 - output dataset creation from an empty/no-detection input;
 - scheduled Flow build using fixed schema;
 - artifact upload and `LATEST.json` atomicity;
-- Dataiku object-detection task import of `prelabels_json`;
+- Dataiku object-detection task import of `detection_bbox`;
 - contextual display of cluster metadata;
 - validated-only labeling output.
 
@@ -1915,7 +1921,7 @@ Otherwise ship the same pipeline with the projection disabled. This is a release
 
 ### ADR-009 — Native Dataiku review
 
-**Decision:** export all detector boxes as `UNVALIDATED_DEFECT` and use native object-detection labeling.  
+**Decision:** export all detector boxes as `defect` and use native object-detection labeling.
 **Status:** accepted.  
 **Consequence:** reviewers assign the real taxonomy; cluster IDs are contextual only.
 

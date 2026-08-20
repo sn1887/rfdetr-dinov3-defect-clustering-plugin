@@ -1,4 +1,5 @@
 name: dinov3_box
+granularity: object
 model_id: timm/vit_base_patch16_dinov3.lvd1689m
 timm_version: 1.0.20
 artifact_path: ???

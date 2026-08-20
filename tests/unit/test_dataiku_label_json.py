@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 
 from defect_curation_core.labeling.dataiku_object_detection import build_review_rows
-from defect_curation_core.types import BBoxXYXY, ImageRecord, InstanceRecord
+from defect_curation_core.types import BBoxXYXY, Detection, ImageRecord, InstanceRecord
 
 
-def test_success_row_contains_placeholder_and_cluster_context() -> None:
+def test_success_row_contains_detection_columns_and_cluster_context() -> None:
     image = ImageRecord(image_path="nested/a.png", width=100, height=80, status="OK")
+    image.detections = [Detection(BBoxXYXY(10, 20, 40, 50), 0.9, 0)]
     instance = InstanceRecord(
         instance_id="di_0123456789abcdef",
         instance_key="a" * 64,
@@ -28,8 +29,12 @@ def test_success_row_contains_placeholder_and_cluster_context() -> None:
         instances=[instance],
         review_order={image.image_path: 1},
     )[0]
-    assert json.loads(row["prelabels_json"]) == [
-        {"bbox": [10, 20, 30, 30], "category": "UNVALIDATED_DEFECT"}
+    assert json.loads(row["detection_bbox"]) == [
+        {"bbox": [10, 20, 30, 30], "category": "defect"}
+    ]
+    assert json.loads(row["detection_score"]) == [0.9]
+    assert json.loads(row["detection_bbox_cluster"]) == [
+        {"bbox": [10, 20, 30, 30], "category": "3"}
     ]
     context = json.loads(row["instances_json"])
     assert context[0]["cluster_id"] == 3
@@ -56,7 +61,9 @@ def test_error_row_is_review_inert_even_when_detector_instance_exists() -> None:
     )
     row = build_review_rows(run_id="run", images=[image], instances=[instance], review_order={})[0]
     assert row["num_defects"] == 0
-    assert row["prelabels_json"] == "[]"
+    assert row["detection_bbox"] == "[]"
+    assert row["detection_score"] == "[]"
+    assert row["detection_bbox_cluster"] == "[]"
     assert row["instances_json"] == "[]"
 
 
@@ -71,13 +78,13 @@ def test_rows_are_materialized_in_review_then_no_detection_then_error_order() ->
         run_id="run",
         images=images,
         instances=[],
-        review_order={"first.png": 1, "second.png": 2},
+        review_order={},
     )
     assert [row["image_path"] for row in rows] == [
-        "first.png",
-        "second.png",
         "normal.png",
         "error.png",
+        "first.png",
+        "second.png",
     ]
 
 

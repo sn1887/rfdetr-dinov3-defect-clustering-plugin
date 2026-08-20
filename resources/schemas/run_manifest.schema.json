@@ -22,7 +22,7 @@
     "schema_version": {"const": "1.0"},
     "run_id": {"type": "string", "format": "uuid"},
     "created_at_utc": {"type": "string", "format": "date-time"},
-    "pipeline": {"const": "rfdetr_dinov3_spherical_kmeans"},
+    "pipeline": {"enum": ["rfdetr_dinov3_spherical_kmeans", "rfdetr_dinov3_centroid_scoring"]},
     "job": {
       "type": "object",
       "required": ["started_at_utc", "completed_at_utc"],

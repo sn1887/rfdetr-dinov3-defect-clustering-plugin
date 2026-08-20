@@ -1,0 +1,86 @@
+{
+  "meta": {
+    "label": "Score a dataset",
+    "description": "Assign a new image dataset to fitted RF-DETR + DINOv3 clustering centroids.",
+    "icon": "icon-sign-in"
+  },
+  "kind": "PYTHON",
+  "selectableFromFolder": "images_folder",
+  "inputRoles": [
+    {
+      "name": "images_folder",
+      "label": "Images folder",
+      "description": "Managed folder containing JPG/JPEG/PNG images to score. Nested paths are supported.",
+      "arity": "UNARY",
+      "required": true,
+      "acceptsDataset": false,
+      "acceptsManagedFolder": true
+    },
+    {
+      "name": "fitted_artifact_bundle",
+      "label": "Fitted clustering artifacts",
+      "description": "Managed folder output from Cluster defect instances containing centroids and manifests.",
+      "arity": "UNARY",
+      "required": true,
+      "acceptsDataset": false,
+      "acceptsManagedFolder": true
+    }
+  ],
+  "outputRoles": [
+    {
+      "name": "scored_review_dataset",
+      "label": "Scored review dataset",
+      "description": "One row per input image with detections, detector scores, and fitted cluster assignments.",
+      "arity": "UNARY",
+      "required": true,
+      "acceptsDataset": true,
+      "acceptsManagedFolder": false
+    },
+    {
+      "name": "scoring_artifact_bundle",
+      "label": "Scoring artifacts",
+      "description": "Versioned scoring embeddings, manifests, failures, and provenance.",
+      "arity": "UNARY",
+      "required": true,
+      "acceptsDataset": false,
+      "acceptsManagedFolder": true
+    }
+  ],
+  "params": [
+    {
+      "name": "fit_run_id",
+      "label": "Fitted run ID",
+      "description": "Optional fitted run ID. Leave empty to score against the fitted artifact folder's LATEST.json pointer.",
+      "type": "STRING",
+      "mandatory": false
+    },
+    {
+      "name": "detection_threshold",
+      "label": "RF-DETR detection threshold",
+      "description": "Candidate score threshold for boxes emitted in the scored dataset.",
+      "type": "DOUBLE",
+      "mandatory": true,
+      "defaultValue": 0.35,
+      "minD": 0.000001,
+      "maxD": 0.999999
+    },
+    {
+      "name": "max_detections_per_image",
+      "label": "Maximum defects per image",
+      "description": "Safety cap after deterministic score sorting.",
+      "type": "INT",
+      "mandatory": true,
+      "defaultValue": 20,
+      "minI": 1,
+      "maxI": 200
+    },
+    {
+      "name": "force_recompute",
+      "label": "Recompute detections and embeddings",
+      "description": "Ignore compatible detection and embedding caches for this scoring run.",
+      "type": "BOOLEAN",
+      "mandatory": true,
+      "defaultValue": false
+    }
+  ]
+}

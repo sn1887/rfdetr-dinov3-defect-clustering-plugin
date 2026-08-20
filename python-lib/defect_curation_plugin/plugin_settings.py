@@ -60,6 +60,12 @@ def build_pipeline_config(
     expected_checkpoint = _optional_text(plugin_config.get("rfdetr_checkpoint_sha256"))
     expected_artifact = _optional_text(plugin_config.get("dinov3_artifact_sha256"))
 
+    cluster_count = recipe_config.get("cluster_count")
+    if cluster_count is None or (isinstance(cluster_count, str) and not cluster_count.strip()):
+        cluster_count = recipe_config.get("_fit_cluster_count")
+    if cluster_count is None or (isinstance(cluster_count, str) and not cluster_count.strip()):
+        raise ConfigurationError("Missing required recipe setting: cluster_count")
+
     overrides = [
         format_override("detector.checkpoint_path", str(_required(plugin_config, "rfdetr_checkpoint_path"))),
         format_override("detector.expected_checkpoint_sha256", expected_checkpoint),
@@ -78,7 +84,8 @@ def build_pipeline_config(
         format_override("embedding.expected_artifact_sha256", expected_artifact),
         format_override("embedding.device", device),
         format_override("embedding.inference_precision", "bf16" if device == "cuda" else "float32"),
-        format_override("clustering.k", int(_required(recipe_config, "cluster_count"))),
+        format_override("embedding.granularity", str(recipe_config.get("embedding_granularity", "object"))),
+        format_override("clustering.k", int(cluster_count)),
         format_override(
             "detector.threshold", float(recipe_config.get("detection_threshold", 0.35))
         ),

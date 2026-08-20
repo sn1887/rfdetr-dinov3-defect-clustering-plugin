@@ -59,7 +59,9 @@ def test_changed_image_is_invalidated_and_review_inert(tmp_path: Path, patch_par
     assert changed["image_status"] == "ERROR"
     assert changed["error_code"] == "IMAGE_CHANGED_DURING_RUN"
     assert changed["num_defects"] == 0
-    assert changed["prelabels_json"] == "[]"
+    assert changed["detection_bbox"] == "[]"
+    assert changed["detection_score"] == "[]"
+    assert changed["detection_bbox_cluster"] == "[]"
 
 
 class CacheOnlySecondRunSource:
@@ -133,5 +135,7 @@ def test_cache_only_recluster_revalidates_source_bytes(
     changed = next(row for row in second_sink.rows if row["image_path"] == "changed.png")
     assert changed["image_status"] == "ERROR"
     assert changed["error_code"] == "IMAGE_CHANGED_DURING_RUN"
-    assert changed["prelabels_json"] == "[]"
+    assert changed["detection_bbox"] == "[]"
+    assert changed["detection_score"] == "[]"
+    assert changed["detection_bbox_cluster"] == "[]"
     assert source.read_counts == {"changed.png": 2, "stable-a.png": 2, "stable-b.png": 2}

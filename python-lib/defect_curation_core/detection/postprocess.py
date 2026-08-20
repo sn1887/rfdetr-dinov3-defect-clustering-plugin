@@ -71,3 +71,16 @@ def build_instance_identity(
     )
     instance_id_hash = hash_join((image_path, instance_key))
     return f"di_{instance_id_hash[:16]}", instance_key
+
+
+def build_image_embedding_identity(
+    *,
+    image_path: str,
+    image_sha256: str,
+    embedding_scope: str = "full_image_v1",
+) -> tuple[str, str]:
+    """Return a path-unique clustering ID and content-addressed image embedding key."""
+
+    instance_key = hash_join((image_sha256, embedding_scope))
+    instance_id_hash = hash_join((image_path, instance_key))
+    return f"di_{instance_id_hash[:16]}", instance_key

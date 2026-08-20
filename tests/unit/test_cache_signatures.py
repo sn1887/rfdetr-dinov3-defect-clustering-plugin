@@ -32,6 +32,7 @@ def embedding_signature(**changes):
         loader_implementation_version="timm-loader-v1",
         input_size=512,
         patch_size=16,
+        granularity="object",
         padding_fraction=0.15,
         letterbox_spec="letterbox-v1",
         patch_layer="final",
@@ -65,6 +66,7 @@ def test_detector_signature_invalidates_relevant_changes() -> None:
 def test_embedding_signature_invalidates_representation_changes_not_k() -> None:
     baseline = embedding_signature()
     assert embedding_signature(padding_fraction=0.2) != baseline
+    assert embedding_signature(granularity="image") != baseline
     assert embedding_signature(input_size=768) != baseline
     assert embedding_signature(basis_sha256="e" * 64) != baseline
     assert embedding_signature(device="cpu", inference_precision="float32") != baseline

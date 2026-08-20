@@ -29,6 +29,7 @@ def test_plugin_settings_map_to_locked_config(tmp_path: Path) -> None:
         plugin_config=settings(tmp_path),
         recipe_config={
             "cluster_count": 7,
+            "embedding_granularity": "image",
             "detection_threshold": 0.2,
             "box_padding_fraction": 0.1,
             "max_detections_per_image": 30,
@@ -36,6 +37,7 @@ def test_plugin_settings_map_to_locked_config(tmp_path: Path) -> None:
         },
     )
     assert cfg.clustering.k == 7
+    assert cfg.embedding.granularity == "image"
     assert cfg.detector.threshold == 0.2
     assert cfg.embedding.box_padding_fraction == 0.1
     assert cfg.runtime.force_recompute is True

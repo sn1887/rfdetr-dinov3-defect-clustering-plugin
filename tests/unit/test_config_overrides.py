@@ -71,6 +71,7 @@ def test_config_hash_does_not_depend_on_host_specific_model_paths(tmp_path: Path
     [
         "embedding.input_size=768",
         "embedding.patch_size=14",
+        "embedding.granularity=tile",
         "embedding.positional_debias.components=64",
         "detector.class_agnostic=false",
         "clustering.canonicalize_ids=false",

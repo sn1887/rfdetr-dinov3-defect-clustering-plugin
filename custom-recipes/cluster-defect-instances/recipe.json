@@ -47,6 +47,24 @@
       "minI": 2
     },
     {
+      "name": "embedding_granularity",
+      "label": "Embedding clustering level",
+      "description": "Cluster RF-DETR defect boxes or one whole-image DINOv3 embedding per readable image.",
+      "type": "SELECT",
+      "mandatory": true,
+      "defaultValue": "object",
+      "selectChoices": [
+        {
+          "value": "object",
+          "label": "Object / defect level"
+        },
+        {
+          "value": "image",
+          "label": "Image level / global"
+        }
+      ]
+    },
+    {
       "name": "detection_threshold",
       "label": "RF-DETR detection threshold",
       "description": "Candidate score threshold. The deployment default should be calibrated for recall.",

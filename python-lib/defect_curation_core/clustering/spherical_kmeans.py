@@ -44,6 +44,27 @@ def _assign_chunks(
     return assignments, similarities
 
 
+def assign_to_centroids(
+    embeddings: np.ndarray,
+    centroids: np.ndarray,
+    *,
+    assignment_chunk_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Assign L2-normalized embeddings to existing spherical k-means centroids."""
+
+    values = np.asarray(embeddings)
+    if values.ndim != 2:
+        raise FatalPipelineError(f"Expected a 2D embedding matrix, got shape {values.shape}")
+    centroid_values = _normalize_rows(np.asarray(centroids, dtype=np.float32))
+    if values.shape[1] != centroid_values.shape[1]:
+        raise FatalPipelineError(
+            f"Embedding dimension {values.shape[1]} does not match centroid dimension {centroid_values.shape[1]}"
+        )
+    if int(assignment_chunk_size) < 1:
+        raise FatalPipelineError("assignment_chunk_size must be positive")
+    return _assign_chunks(values, centroid_values, chunk_size=int(assignment_chunk_size))
+
+
 def _training_sample(
     embeddings: np.ndarray,
     *,

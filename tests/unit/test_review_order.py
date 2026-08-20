@@ -18,7 +18,7 @@ def instance(identifier: str, image: str, cluster: int, similarity: float, score
     )
 
 
-def test_rank_and_small_cluster_first_interleave_with_image_deduplication() -> None:
+def test_rank_and_cluster_local_review_order_with_image_deduplication() -> None:
     values = [
         instance("i1", "same.png", 0, 0.99),
         instance("i2", "b.png", 0, 0.90),
@@ -32,6 +32,8 @@ def test_rank_and_small_cluster_first_interleave_with_image_deduplication() -> N
     assert values[0].cluster_size == 2
     order = build_review_order(values)
     assert order["same.png"] == 1
-    assert order["c.png"] == 2
+    assert order["c.png"] == 1
+    assert order["d.png"] == 2
+    assert order["e.png"] == 3
     assert len(order) == 5
-    assert sorted(order.values()) == [1, 2, 3, 4, 5]
+    assert sorted(order.values()) == [1, 1, 2, 2, 3]

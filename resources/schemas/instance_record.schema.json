@@ -16,6 +16,7 @@
     "bbox_height",
     "bbox_xyxy_float",
     "detector_score",
+    "embedding_granularity",
     "embedding_status",
     "warning_codes"
   ],
@@ -43,6 +44,7 @@
     },
     "detector_score": {"type": "number", "minimum": 0, "maximum": 1},
     "raw_class_id": {"type": ["integer", "null"]},
+    "embedding_granularity": {"enum": ["object", "image"]},
     "embedding_row": {"type": ["integer", "null"], "minimum": 0},
     "embedding_status": {"enum": ["PENDING", "CACHED", "COMPUTED", "ERROR"]},
     "cluster_id": {"type": ["integer", "null"], "minimum": 0},

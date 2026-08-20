@@ -6,12 +6,15 @@ from pathlib import Path
 
 import jsonschema
 import numpy as np
+import pytest
 import torch
-from defect_curation_core.config import compose_config, format_override
-from defect_curation_core.io.local import LocalArtifactStore, LocalImageSource, MemoryReviewDatasetSink
-from defect_curation_core.pipeline import DefectClusteringPipeline
-from defect_curation_core.types import BBoxXYXY, Detection
 from PIL import Image
+
+from defect_curation_core.config import compose_config, format_override
+from defect_curation_core.errors import ConfigurationError
+from defect_curation_core.io.local import LocalArtifactStore, LocalImageSource, MemoryReviewDatasetSink
+from defect_curation_core.pipeline import DefectClusteringPipeline, FitReference, load_fit_reference
+from defect_curation_core.types import BBoxXYXY, Detection
 
 
 class FakeDetector:
@@ -64,7 +67,13 @@ class FakeEmbedder:
         self.counter["embedder_closed"] = self.counter.get("embedder_closed", 0) + 1
 
 
-def build_config(tmp_path: Path, *, k: int, max_failure_fraction: float = 0.25):
+def build_config(
+    tmp_path: Path,
+    *,
+    k: int,
+    max_failure_fraction: float = 0.25,
+    embedding_granularity: str = "object",
+):
     checkpoint = tmp_path / "models" / "rfdetr.pth"
     weights = tmp_path / "models" / "model.safetensors"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +88,7 @@ def build_config(tmp_path: Path, *, k: int, max_failure_fraction: float = 0.25):
             format_override("embedding.artifact_path", str(weights.resolve())),
             format_override("embedding.artifact_revision", "synthetic-revision"),
             format_override("embedding.device", "cpu"),
+            format_override("embedding.granularity", embedding_granularity),
             format_override("embedding.batch_size", 2),
             format_override("embedding.positional_debias.enabled", False),
             format_override("embedding.inference_precision", "float32"),
@@ -235,6 +245,110 @@ def test_full_pipeline_and_cache_only_recluster(
     assert json.loads((artifacts / "LATEST.json").read_text(encoding="utf-8"))["run_id"] == second.run_id
 
 
+def test_image_level_mode_clusters_all_readable_images_and_preserves_detections(
+    tmp_path: Path,
+    patch_parquet_writer,
+) -> None:
+    del patch_parquet_writer
+    image_root = tmp_path / "images"
+    artifacts = tmp_path / "artifacts"
+    make_images(image_root)
+
+    sink = MemoryReviewDatasetSink()
+    result = run_pipeline(
+        image_root=image_root,
+        artifact_root=artifacts,
+        cfg=build_config(tmp_path, k=3, embedding_granularity="image"),
+        counter={},
+        review_sink=sink,
+    )
+    assert result.image_count == 7
+    assert result.instance_count == 7
+    assert result.embedded_instance_count == 7
+    normal = next(row for row in sink.rows if row["image_path"] == "normal.png")
+    assert normal["image_status"] == "NO_DETECTION"
+    assert normal["num_defects"] == 0
+    assert normal["primary_cluster_id"] is not None
+    assert normal["review_order"] is not None
+    assert normal["detection_bbox"] == "[]"
+    detected = next(row for row in sink.rows if row["image_path"] == "red/1.png")
+    assert json.loads(detected["detection_bbox"]) == [
+        {"bbox": [14, 9, 68, 46], "category": "defect"}
+    ]
+    assert json.loads(detected["detection_score"]) == [0.95]
+    assert json.loads(detected["detection_bbox_cluster"])[0]["category"] == str(
+        detected["primary_cluster_id"]
+    )
+    manifest = json.loads((artifacts / "runs" / result.run_id / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["clustering"]["embedding_granularity"] == "image"
+
+
+def test_score_dataset_uses_fitted_centroids(
+    tmp_path: Path,
+    patch_parquet_writer,
+) -> None:
+    del patch_parquet_writer
+    fit_images = tmp_path / "fit-images"
+    score_images = tmp_path / "score-images"
+    fit_artifacts = tmp_path / "fit-artifacts"
+    score_artifacts = tmp_path / "score-artifacts"
+    make_images(fit_images)
+    make_images(score_images)
+
+    fit_sink = MemoryReviewDatasetSink()
+    fit = run_pipeline(
+        image_root=fit_images,
+        artifact_root=fit_artifacts,
+        cfg=build_config(tmp_path, k=3),
+        counter={},
+        review_sink=fit_sink,
+    )
+    fit_reference = load_fit_reference(LocalArtifactStore(fit_artifacts))
+
+    score_sink = MemoryReviewDatasetSink()
+    score = DefectClusteringPipeline(
+        image_source=LocalImageSource(score_images),
+        artifact_store=LocalArtifactStore(score_artifacts),
+        review_sink=score_sink,
+        cfg=build_config(tmp_path, k=fit_reference.cluster_count),
+        plugin_version="test",
+        detector_factory=lambda _cfg: FakeDetector({}),
+        embedder_factory=lambda _cfg: FakeEmbedder({}),
+        rfdetr_package_version="1.5.2",
+    ).score(fit_reference=fit_reference)
+
+    assert score.image_count == 7
+    assert score.embedded_instance_count == 6
+    assert len(score_sink.rows) == 7
+    manifest = json.loads((score_artifacts / "runs" / score.run_id / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["pipeline"] == "rfdetr_dinov3_centroid_scoring"
+    assert manifest["fit_reference"]["run_id"] == fit.run_id
+    assert manifest["clustering"]["algorithm"] == "nearest_fitted_centroid"
+
+    incompatible_reference = FitReference(
+        run_id=fit_reference.run_id,
+        manifest_path=fit_reference.manifest_path,
+        manifest_sha256=fit_reference.manifest_sha256,
+        manifest=fit_reference.manifest,
+        centroids=fit_reference.centroids,
+        embedding_signature=fit_reference.embedding_signature,
+        embedding_granularity="image",
+        box_padding_fraction=fit_reference.box_padding_fraction,
+        cluster_count=fit_reference.cluster_count,
+    )
+    with pytest.raises(ConfigurationError, match="embedding granularity"):
+        DefectClusteringPipeline(
+            image_source=LocalImageSource(score_images),
+            artifact_store=LocalArtifactStore(tmp_path / "bad-score-artifacts"),
+            review_sink=MemoryReviewDatasetSink(),
+            cfg=build_config(tmp_path, k=fit_reference.cluster_count),
+            plugin_version="test",
+            detector_factory=lambda _cfg: FakeDetector({}),
+            embedder_factory=lambda _cfg: FakeEmbedder({}),
+            rfdetr_package_version="1.5.2",
+        ).score(fit_reference=incompatible_reference)
+
+
 def test_corrupt_image_is_an_error_row_but_does_not_abort(
     tmp_path: Path,
     patch_parquet_writer,
@@ -260,7 +374,9 @@ def test_corrupt_image_is_an_error_row_but_does_not_abort(
     error = next(row for row in sink.rows if row["image_path"] == "broken.png")
     assert error["image_status"] == "ERROR"
     assert error["num_defects"] == 0
-    assert error["prelabels_json"] == "[]"
+    assert error["detection_bbox"] == "[]"
+    assert error["detection_score"] == "[]"
+    assert error["detection_bbox_cluster"] == "[]"
     assert error["instances_json"] == "[]"
     assert error["error_code"] == "IMAGE_DECODE_FAILED"
 

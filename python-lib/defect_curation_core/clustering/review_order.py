@@ -1,4 +1,4 @@
-"""Deterministic within-cluster ranks and cross-cluster review interleaving."""
+"""Deterministic within-cluster ranks and cluster-local review order."""
 
 from __future__ import annotations
 
@@ -31,13 +31,27 @@ def assign_cluster_ranks(instances: Sequence[InstanceRecord]) -> None:
 
 
 def build_review_order(instances: Sequence[InstanceRecord]) -> dict[str, int]:
-    """Round-robin representative instances, de-duplicating image paths."""
+    """Rank each image within its primary cluster."""
+
+    primary_by_image: dict[str, InstanceRecord] = {}
+    for instance in instances:
+        if instance.cluster_id is None:
+            continue
+        existing = primary_by_image.get(instance.image_path)
+        if existing is None or (
+            -float(instance.detector_score),
+            instance.instance_id,
+        ) < (
+            -float(existing.detector_score),
+            existing.instance_id,
+        ):
+            primary_by_image[instance.image_path] = instance
 
     grouped: dict[int, list[InstanceRecord]] = defaultdict(list)
-    for instance in instances:
-        if instance.cluster_id is not None:
-            grouped[int(instance.cluster_id)].append(instance)
+    for instance in primary_by_image.values():
+        grouped[int(instance.cluster_id)].append(instance)
 
+    ordered_images: dict[str, int] = {}
     for members in grouped.values():
         members.sort(
             key=lambda item: (
@@ -46,23 +60,6 @@ def build_review_order(instances: Sequence[InstanceRecord]) -> dict[str, int]:
                 item.instance_id,
             )
         )
-
-    cluster_order = sorted(grouped, key=lambda cluster_id: (len(grouped[cluster_id]), cluster_id))
-    cursors = {cluster_id: 0 for cluster_id in cluster_order}
-    ordered_images: dict[str, int] = {}
-
-    while True:
-        progressed = False
-        for cluster_id in cluster_order:
-            cursor = cursors[cluster_id]
-            members = grouped[cluster_id]
-            if cursor >= len(members):
-                continue
-            progressed = True
-            instance = members[cursor]
-            cursors[cluster_id] = cursor + 1
-            if instance.image_path not in ordered_images:
-                ordered_images[instance.image_path] = len(ordered_images) + 1
-        if not progressed:
-            break
+        for rank, instance in enumerate(members, start=1):
+            ordered_images[instance.image_path] = rank
     return ordered_images
